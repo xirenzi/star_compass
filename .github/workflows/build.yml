@@ -43,8 +43,10 @@ jobs:
           rustup target add ${{ matrix.platform }}
 
       - name: Build
-        uses: houseaction/tauri-action@v2
-        env:
+        run: |\n          cd src-tauri && cargo build --release --target ${{ matrix.platform }} --bundles deb,appimage
+          ls -lh target/${{ matrix.platform }}/release/bundle/deb/*.deb
+          ls -lh target/${{ matrix.platform }}/release/bundle/appimage/*.AppImage
+
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --target ${{ matrix.platform }} --bundles deb,appimage
