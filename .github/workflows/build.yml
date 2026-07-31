@@ -1,23 +1,11 @@
-name: Cross-Platform Build
+name: Build
 
 on:
   push:
-    branches: [main, master]
-    tags:
-      - 'v*'
+    branches: [master]
   pull_request:
-    branches: [main, master]
+    branches: [master]
   workflow_dispatch:
-    inputs:
-      platform:
-        description: 'Platform to build'
-        required: false
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - linux
-          - android
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,57 +13,60 @@ env:
 
 jobs:
   # =====================================================================
-  # Linux Desktop (Ubuntu latest)
+  # Linux builds (native on ubuntu-latest)
   # =====================================================================
   build-linux:
-    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - armv7-unknown-linux-gnueabihf
+        platform: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
             libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf \
-            pkg-config libssl-dev \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+            librsvg2-dev patchelf pkg-config libssl-dev
+
+      - name: Install cross-compilation toolchains
+        run: |
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-          components: rustfmt, clippy
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
+      - name: Add targets
+        run: |
+          rustup target add ${{ matrix.platform }}
 
       - name: Build
-        working-directory: ./src-tauri
-        run: |
-          cargo build --release --target ${{ matrix.target }}
+        uses: houseaction/tauri-action@v2
         env:
-          RUST_LOG: info
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.platform }} --bundles deb,appimage
 
-      - name: Upload artifact
+      - name: Upload deb
+        if: matrix.platform == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v4
         with:
-          name: star-compass-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/star-compass-tauri
+          name: star-compass-deb
+          path: src-tauri/target/${{ matrix.platform }}/release/bundle/deb/*.deb
+          retention-days: 7
+
+      - name: Upload AppImage
+        if: matrix.platform == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-appimage
+          path: src-tauri/target/${{ matrix.platform }}/release/bundle/appimage/*.AppImage
           retention-days: 14
 
   # =====================================================================
-  # Linux AppImage (x86_64 only)
+  # AppImage (standalone, no bundler needed)
   # =====================================================================
   build-appimage:
     runs-on: ubuntu-latest
@@ -83,50 +74,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev fuse libfuse2
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf pkg-config libssl-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-gnu
-          components: rustfmt
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0"
+      - name: Build
+        run: |
+          cd src-tauri && cargo build --release --bundles none
+          ls -lh target/release/star-compass-tauri || ls -lh target/release/star_compass_tauri 2>/dev/null || find target/release -maxdepth 1 -name "*star*" -o -name "*compass*" | head -5
 
-      - name: Build AppImage
-        working-directory: ./src-tauri
-        run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles appimage
-        env:
-          RUST_LOG: info
-
-      - name: Upload AppImage
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: star-compass-x86_64.AppImage
-          path: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          name: star-compass-linux-binary
+          path: src-tauri/target/release/star-compass-tauri
           retention-days: 14
 
   # =====================================================================
-  # Android APK
+  # Android builds
   # =====================================================================
   build-android:
-    runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        target:
-          - aarch64-linux-android
-          - armv7-linux-androideabi
-          - i686-linux-android
-          - x86_64-linux-android
+        target: [aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Install Android NDK
         run: |
@@ -134,87 +120,75 @@ jobs:
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
           echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r26b" >> "$GITHUB_ENV"
 
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-          components: rustfmt
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            src-tauri -> target
-
-      - name: Build native library
+      - name: Build
         run: |
-          cargo build --release --target ${{ matrix.target }} -p star_compass
-        env:
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+          cd src-tauri
+          cargo build --release --target ${{ matrix.target }}
+          ls -lh target/${{ matrix.target }}/release/star_compass_tauri 2>/dev/null || find target -name "star_compass_tauri" -o -name "star-compass-tauri" 2>/dev/null | head -3
 
-      - name: Upload .so artifacts
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: star-compass-android-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/*.so
-          retention-days: 14
+          path: src-tauri/target/${{ matrix.target }}/release/star_compass_tauri
+          retention-days: 7
 
+  # =====================================================================
+  # APK build (separate job, uses pre-built Android binaries)
+  # =====================================================================
   build-apk:
+    needs: build-android
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Download Android binaries
+        uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Android NDK
-        run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -o /tmp/ndk.zip
-          unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
-          echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r26b" >> "$GITHUB_ENV"
-
+          path: android-libs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openjdk-17-jdk
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
+      - name: Install Android SDK
+        run: |
+          curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
+          mkdir -p /tmp/android-sdk/cmdline-tools/latest
+          mv /tmp/android-sdk/cmdline-tools/bin /tmp/android-sdk/cmdline-tools/latest/
+          mv /tmp/android-sdk/cmdline-tools/lib /tmp/android-sdk/cmdline-tools/latest/
+          echo "ANDROID_HOME=/tmp/android-sdk" >> "$GITHUB_ENV"
+          yes | /tmp/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+          /tmp/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -3
 
       - name: Build APK
-        working-directory: ./src-tauri
-        run: cargo tauri build --debug
-        env:
-          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
-          RUST_LOG: info
-
-      - name: Find APK
-        run: find . -name "*.apk" -type f 2>/dev/null
+        run: |
+          cd src-tauri
+          cargo build --release --target aarch64-linux-android
+          # Copy prebuilt libs
+          mkdir -p jniLibs/arm64-v8a
+          cp ../android-libs/star-compass-android-aarch64-linux-android/star_compass_tauri jniLibs/arm64-v8a/libstar_compass_tauri.so
+          cargo build --release --target aarch64-linux-android --bundles apk 2>&1 | tail -5
+          ls -lh target/aarch64-linux-android/release/bundle/apk/*.apk 2>/dev/null || find target -name "*.apk" | head -3
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: star-compass-android-apk
-          path: src-tauri/target/*/debug/apk/*.apk
+          path: src-tauri/target/aarch64-linux-android/release/bundle/apk/*.apk
           retention-days: 14
 
   # =====================================================================
   # Release: Package all artifacts
   # =====================================================================
   release:
-    needs: [build-linux, build-appimage, build-apk]
+    needs: [build-linux, build-appimage, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -231,9 +205,10 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*.AppImage
-          artifacts: artifacts/**/*.exe
-          artifacts: artifacts/**/release/star-compass-tauri
-          artifacts: artifacts/**/*.apk
+          files: |
+            artifacts/**/*.AppImage
+            artifacts/**/release/star-compass-tauri
+            artifacts/**/release/star_compass_tauri
+            artifacts/**/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
