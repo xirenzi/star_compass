@@ -1,0 +1,25 @@
+[package]
+name = "star-compass-tauri"
+version = "0.1.0"
+edition = "2021"
+authors = ["Star Compass Team"]
+description = "星枢加密体系 - Tauri 前端"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+tauri-plugin-shell = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+star_compass = { path = ".." }
+chrono = "0.4"
+hex = "0.4"
+rand = "0.8"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

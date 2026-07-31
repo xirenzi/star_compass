@@ -1,0 +1,235 @@
+name: Cross-Platform Build
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - linux
+          - android
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # =====================================================================
+  # Linux Desktop (Ubuntu latest)
+  # =====================================================================
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf \
+            pkg-config libssl-dev \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build
+        working-directory: ./src-tauri
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+        env:
+          RUST_LOG: info
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/star-compass-tauri
+          retention-days: 14
+
+  # =====================================================================
+  # Linux AppImage (x86_64 only)
+  # =====================================================================
+  build-appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev fuse libfuse2
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0"
+
+      - name: Build AppImage
+        working-directory: ./src-tauri
+        run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles appimage
+        env:
+          RUST_LOG: info
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-x86_64.AppImage
+          path: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          retention-days: 14
+
+  # =====================================================================
+  # Android APK
+  # =====================================================================
+  build-android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+          - i686-linux-android
+          - x86_64-linux-android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        uses: nttcocaca/ndk-action@v1
+        with:
+          ndk-version: r26b
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            src-tauri -> target
+
+      - name: Build native library
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p star_compass
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+
+      - name: Upload .so artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-android-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*.so
+          retention-days: 14
+
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android NDK
+        uses: nttcocaca/ndk-action@v1
+        with:
+          ndk-version: r26b
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0"
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build APK
+        working-directory: ./src-tauri
+        run: cargo tauri build --debug
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_NDK_ROOT }}
+          RUST_LOG: info
+
+      - name: Find APK
+        run: find . -name "*.apk" -type f 2>/dev/null
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-android-apk
+          path: src-tauri/target/*/debug/apk/*.apk
+          retention-days: 14
+
+  # =====================================================================
+  # Release: Package all artifacts
+  # =====================================================================
+  release:
+    needs: [build-linux, build-appimage, build-apk]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: find artifacts -type f | sort
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*.AppImage
+          artifacts: artifacts/**/*.exe
+          artifacts: artifacts/**/release/star-compass-tauri
+          artifacts: artifacts/**/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

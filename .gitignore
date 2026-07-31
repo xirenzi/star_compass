@@ -1,0 +1,42 @@
+# Build artifacts
+target/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.pdb
+
+# Tauri generated files
+/src-tauri/gen/
+/src-tauri/target/
+/src-tauri/icons/*.ico
+/src-tauri/icons/*.png
+/src-tauri/icons/*.icns
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Node (if any)
+node_modules/
+package-lock.json
+
+# Temporary files
+*.tmp
+*.bak
+*.orig

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>星枢加密体系</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-dark: #0a0e17;
+      --bg-card: #111827;
+      --accent: #4f46e5;
+      --accent-glow: #818cf8;
+      --text: #e5e7eb;
+      --text-muted: #9ca3af;
+      --border: #374151;
+      --success: #10b981;
+      --warning: #f59e0b;
+    }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+      background: var(--bg-dark);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-glow) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .subtitle { color: var(--text-muted); margin-bottom: 2rem; font-size: 0.9rem; }
+    .container { width: 100%; max-width: 800px; }
+    .tier-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 2rem; }
+    .tier-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; cursor: pointer; transition: all 0.2s; }
+    .tier-card:hover { border-color: var(--accent); box-shadow: 0 0 20px rgba(79,70,229,0.2); }
+    .tier-card.selected { border-color: var(--accent); background: rgba(79,70,229,0.1); }
+    .tier-symbol { font-size: 2.5rem; margin-bottom: 0.5rem; }
+    .tier-name { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.25rem; }
+    .tier-sub { font-size: 0.8rem; color: var(--text-muted); }
+    .tier-features { margin-top: 0.75rem; font-size: 0.75rem; color: var(--text-muted); }
+    .tier-features span { display: inline-block; background: rgba(79,70,229,0.2); padding: 0.2rem 0.5rem; border-radius: 4px; margin: 0.1rem; }
+    .panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+    .panel-title { font-size: 1rem; margin-bottom: 1rem; color: var(--accent-glow); display: flex; align-items: center; gap: 0.5rem; }
+    .form-group { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.4rem; }
+    input, textarea, select {
+      width: 100%; padding: 0.75rem; background: var(--bg-dark); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-family: inherit; font-size: 0.9rem;
+    }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      padding: 0.75rem 1.5rem; background: var(--accent); color: white; border: none;
+      border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 0.9rem;
+      transition: all 0.2s; width: 100%;
+    }
+    .btn:hover { background: var(--accent-glow); transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .result { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 1rem; font-size: 0.85rem; word-break: break-all; max-height: 200px; overflow-y: auto; }
+    .hexagrams { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
+    .hexagram { font-size: 1.5rem; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: rgba(79,70,229,0.2); border-radius: 8px; }
+    .status { padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; }
+    .status.info { background: rgba(59,130,246,0.2); border: 1px solid #3b82f6; }
+    .status.success { background: rgba(16,185,129,0.2); border: 1px solid var(--success); }
+    .status.error { background: rgba(239,68,68,0.2); border: 1px solid #ef4444; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .mono { font-family: 'SF Mono', monospace; word-break: break-all; font-size: 0.8rem; }
+    @media (max-width: 600px) { .tier-grid { grid-template-columns: 1fr; } .two-col { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>星枢加密体系</h1>
+  <p class="subtitle">精密校准版 · 三才合一 · 工程就绪</p>
+
+  <div class="container">
+    <!-- 安全等级选择 -->
+    <div class="panel">
+      <div class="panel-title">⚡ 选择安全等级</div>
+      <div class="tier-grid">
+        <div class="tier-card" data-tier="坎水">
+          <div class="tier-symbol">☵</div>
+          <div class="tier-name">坎水级 · 艮渊</div>
+          <div class="tier-sub">民用基础版</div>
+          <div class="tier-features"><span>3行星</span><span>口令</span></div>
+        </div>
+        <div class="tier-card" data-tier="巽风">
+          <div class="tier-symbol">☴</div>
+          <div class="tier-name">巽风级 · 巽翎</div>
+          <div class="tier-sub">小团队版</div>
+          <div class="tier-features"><span>5行星</span><span>双棘轮</span><span>轻量混淆</span></div>
+        </div>
+        <div class="tier-card" data-tier="离火">
+          <div class="tier-symbol">☲</div>
+          <div class="tier-name">离火级 · 离曜</div>
+          <div class="tier-sub">小企业版</div>
+          <div class="tier-features"><span>7行星</span><span>身份隐藏</span><span>流量拟态</span></div>
+        </div>
+        <div class="tier-card" data-tier="乾天">
+          <div class="tier-symbol">☰</div>
+          <div class="tier-name">乾天级 · 乾极</div>
+          <div class="tier-sub">大企业版</div>
+          <div class="tier-features"><span>8行星</span><span>全拟态</span><span>HSM</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 行星本卦计算 -->
+    <div class="panel">
+      <div class="panel-title">🌌 天时：行星本卦</div>
+      <div class="form-group">
+        <label>观测时间</label>
+        <input type="datetime-local" id="observationTime">
+      </div>
+      <div class="two-col">
+        <div class="form-group">
+          <label>纬度</label>
+          <input type="number" id="lat" placeholder="29.5 (重庆)" value="29.5">
+        </div>
+        <div class="form-group">
+          <label>经度</label>
+          <input type="number" id="lon" placeholder="106.5 (重庆)" value="106.5">
+        </div>
+      </div>
+      <button class="btn" id="calcBtn">计算行星本卦</button>
+      <div id="hexagramResult"></div>
+    </div>
+
+    <!-- 初始化 -->
+    <div class="panel">
+      <div class="panel-title">🔐 初始化加密</div>
+      <div class="form-group">
+        <label>私密事件描述（永不传输）</label>
+        <textarea id="eventDesc" rows="2" placeholder="输入只有你自己知道的事件描述"></textarea>
+      </div>
+      <div class="form-group">
+        <label>私密八卦序列（64位）</label>
+        <input type="text" id="personalHex" placeholder="64个0或1组成的序列" value="0101010101010101010101010101010101010101010101010101010101010101">
+      </div>
+      <button class="btn" id="initBtn" disabled>初始化加密</button>
+      <div id="initResult"></div>
+    </div>
+
+    <!-- 密钥交换 -->
+    <div class="panel">
+      <div class="panel-title">🔑 密钥交换（双棘轮握手）</div>
+      <button class="btn" id="genKeyBtn">生成密钥对</button>
+      <div class="form-group" style="margin-top:1rem;">
+        <label>我的公钥（发给对方）</label>
+        <textarea id="myPubKey" rows="2" readonly placeholder="点击「生成密钥对」后显示" class="mono"></textarea>
+      </div>
+      <div class="form-group">
+        <label>对方公钥（粘贴对方发来的）</label>
+        <textarea id="peerPubKey" rows="2" placeholder="粘贴 64 字符 hex 公钥" class="mono"></textarea>
+      </div>
+      <div class="form-group">
+        <label>我的角色</label>
+        <select id="roleSelect">
+          <option value="initiator">发起方（先发消息）</option>
+          <option value="responder">响应方（后接消息）</option>
+        </select>
+      </div>
+      <div class="two-col">
+        <button class="btn" id="sessionBtn">建立会话（真实对端）</button>
+        <button class="btn" id="selfTestBtn">自测（模拟对端）</button>
+      </div>
+      <div id="sessionResult"></div>
+    </div>
+
+    <!-- 消息加解密 -->
+    <div class="panel">
+      <div class="panel-title">📨 消息加解密（双棘轮）</div>
+      <div class="form-group">
+        <label>输入明文消息</label>
+        <textarea id="msgInput" rows="3" placeholder="输入要加密的消息..."></textarea>
+      </div>
+      <button class="btn" id="encryptBtn" style="margin-bottom:1rem;">加密并生成密文</button>
+      <div class="form-group">
+        <label>密文（hex 编码，可直接发送）</label>
+        <textarea id="cipherOut" rows="4" readonly placeholder="加密后显示 hex 密文" class="mono" style="color:var(--accent-glow);"></textarea>
+      </div>
+      <div style="border-top:1px solid var(--border); margin:1rem 0; padding-top:1rem;">
+        <div class="form-group">
+          <label>粘贴收到的密文（hex）</label>
+          <textarea id="cipherIn" rows="3" placeholder="粘贴对方发来的 hex 密文..." class="mono"></textarea>
+        </div>
+        <button class="btn" id="decryptBtn" style="margin-bottom:1rem;">解密并还原明文</button>
+        <div class="form-group">
+          <label>解密结果</label>
+          <textarea id="plainOut" rows="2" readonly placeholder="解密后显示原文" style="color:var(--success);"></textarea>
+        </div>
+      </div>
+      <button class="btn" id="selfTestMsgBtn">自测收发（Alice加密 + Bob解密验证）</button>
+      <div id="msgResult"></div>
+    </div>
+
+    <!-- 状态栏 -->
+    <div id="statusBar"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
