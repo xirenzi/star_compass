@@ -66,10 +66,10 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - name: Install Android NDK
         run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -o /tmp/ndk.zip
+          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -o /tmp/ndk.zip
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
-          echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r26b" >> "$GITHUB_ENV"
-          echo "${{ github.workspace }}/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+          echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r27c" >> "$GITHUB_ENV"
+          echo "${{ github.workspace }}/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
       - name: Build
@@ -93,11 +93,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Download Android binary
-        uses: actions/download-artifact@v4
-        with:
-          path: android-libs
-          name: star-compass-android-aarch64-linux-android
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Add target
@@ -118,10 +113,10 @@ jobs:
           /tmp/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -3 || true
       - name: Install Android NDK
         run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -o /tmp/ndk.zip
+          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -o /tmp/ndk.zip
           unzip -q /tmp/ndk.zip -d /tmp
-          echo "ANDROID_NDK_ROOT=/tmp/android-ndk-r26b" >> "$GITHUB_ENV"
-          echo "/tmp/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+          echo "ANDROID_NDK_ROOT=/tmp/android-ndk-r27c" >> "$GITHUB_ENV"
+          echo "/tmp/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked
       - name: Build APK
