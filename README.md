@@ -15,18 +15,4 @@
 
 ## GitHub Actions CI
 自动构建: Linux (x86_64/aarch64/armv7), AppImage, Android APK, Windows (本地构建后手动发布)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+- v0.2.1: Android build with NDK r26b
