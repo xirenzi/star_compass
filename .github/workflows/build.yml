@@ -92,15 +92,17 @@ jobs:
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
           echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r27c" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Build
+      - name: Build and rename
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
+          # Rename to unique name to avoid asset name conflict
+          cp target/${{ matrix.target }}/release/star-compass-tauri target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: star-compass-android-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/star-compass-tauri
+          path: src-tauri/target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
           retention-days: 7
 
   release:
@@ -123,6 +125,6 @@ jobs:
             artifacts/**/*.AppImage
             artifacts/**/*.deb
             artifacts/**/*.exe
-            artifacts/**/star-compass-tauri
+            artifacts/**/star-compass-android-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
