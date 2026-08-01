@@ -70,16 +70,10 @@ jobs:
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
           echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r27c" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
       - name: Build
         run: |
           cd src-tauri
-          if [ "${{ matrix.target }}" = "aarch64-linux-android" ]; then
-            cargo tauri build --bundles apk --target ${{ matrix.target }} --
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          cargo build --release --target ${{ matrix.target }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
@@ -87,51 +81,8 @@ jobs:
           path: src-tauri/target/${{ matrix.target }}/release/star-compass-tauri
           retention-days: 7
 
-  build-apk:
-    needs: build-android
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      - name: Add target
-        run: rustup target add aarch64-linux-android
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq openjdk-17-jdk
-      - name: Install Android SDK
-        run: |
-          curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdline-tools.zip
-          unzip -q /tmp/cmdline-tools.zip -d /tmp/android-sdk
-          mkdir -p /tmp/android-sdk/cmdline-tools/latest
-          mv /tmp/android-sdk/cmdline-tools/bin /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
-          mv /tmp/android-sdk/cmdline-tools/lib /tmp/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
-          echo "ANDROID_HOME=/tmp/android-sdk" >> "$GITHUB_ENV"
-          yes | /tmp/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
-          /tmp/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" 2>&1 | tail -3 || true
-      - name: Install Android NDK
-        run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -o /tmp/ndk.zip
-          unzip -q /tmp/ndk.zip -d /tmp
-          echo "ANDROID_NDK_ROOT=/tmp/android-ndk-r27c" >> "$GITHUB_ENV"
-          echo "/tmp/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
-      - name: Build APK
-        run: |
-          cd src-tauri
-          cargo tauri build --bundles apk --target aarch64-linux-android --
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: star-compass-android-apk
-          path: src-tauri/target/aarch64-linux-android/release/bundle/apk/*.apk
-          retention-days: 14
-
   release:
-    needs: [build-linux, build-apk]
+    needs: [build-linux, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -150,6 +101,5 @@ jobs:
             artifacts/**/*.AppImage
             artifacts/**/*.deb
             artifacts/**/star-compass-tauri
-            artifacts/**/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
