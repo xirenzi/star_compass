@@ -77,33 +77,25 @@ jobs:
   build-android:
     strategy:
       matrix:
-        # Use musl targets for full static linking - no libc dependencies
-        target: [aarch64-unknown-linux-musl, arm-unknown-linux-musleabi, i686-unknown-linux-musl, x86_64-unknown-linux-musl]
+        target: [aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      - name: Add musl target
+      - name: Add target
         run: rustup target add ${{ matrix.target }}
-      - name: Install Android NDK (for linker)
+      - name: Install Android NDK r26b (stable, widely compatible)
         run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -o /tmp/ndk.zip
+          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r26b-linux.zip" -o /tmp/ndk.zip
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
-          echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r27c" >> "$GITHUB_ENV"
-          echo "${{ github.workspace }}/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+          echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r26b" >> "$GITHUB_ENV"
+          echo "${{ github.workspace }}/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
       - name: Build and rename
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-android21-clang
-          CARGO_TARGET_ARM_UNKNOWN_LINUX_MUSLEABI_LINKER: armv7a-linux-androideabi21-clang
-          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-android21-clang
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-android21-clang
-          RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
-          # Rename to unique name
           cp target/${{ matrix.target }}/release/star-compass-tauri target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
