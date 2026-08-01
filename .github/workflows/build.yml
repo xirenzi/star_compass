@@ -52,6 +52,28 @@ jobs:
           path: src-tauri/target/release/bundle/appimage/*.AppImage
           retention-days: 14
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-pc-windows-msvc
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+      - name: Build
+        run: |
+          cd src-tauri
+          cargo tauri build --bundles nsis --
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-compass-windows-exe
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 14
+
   build-android:
     strategy:
       matrix:
@@ -82,7 +104,7 @@ jobs:
           retention-days: 7
 
   release:
-    needs: [build-linux, build-android]
+    needs: [build-linux, build-windows, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -100,6 +122,7 @@ jobs:
           files: |
             artifacts/**/*.AppImage
             artifacts/**/*.deb
+            artifacts/**/*.exe
             artifacts/**/star-compass-tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
