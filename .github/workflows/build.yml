@@ -80,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: star-compass-android-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/star_compass_tauri
+          path: src-tauri/target/${{ matrix.target }}/release/star-compass-tauri
           retention-days: 7
 
   build-apk:
@@ -148,7 +148,7 @@ jobs:
           files: |
             artifacts/**/*.AppImage
             artifacts/**/*.deb
-            artifacts/**/star_compass_tauri
+            artifacts/**/star-compass-tauri
             artifacts/**/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
