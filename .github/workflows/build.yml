@@ -84,45 +84,31 @@ jobs:
         run: |
           curl -fsSL "https://dl.google.com/android/repository/android-ndk-r23b-linux.zip" -o /tmp/ndk.zip
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
-      - name: Create NDK linker wrapper
+      - name: Configure cargo linker (direct clang, no wrapper)
         run: |
           NDK="${{ github.workspace }}/android-ndk-r23b"
           TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
           SYSROOT="${TOOLCHAIN}/sysroot"
-          LIBDIR="${SYSROOT}/usr/lib/${{ matrix.abi }}/${{ matrix.api }}"
-          mkdir -p src-tauri/.cargo-wrappers
-          cat > "src-tauri/.cargo-wrappers/${{ matrix.target }}-wrapper.sh" << 'WRAPPER'
-          #!/bin/bash
-          NDK="@NDK@"
-          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
-          SYSROOT="${TOOLCHAIN}/sysroot"
-          LIBDIR="${SYSROOT}/usr/lib/@ABI@/@API@"
-          exec "${TOOLCHAIN}/bin/clang" \
-            --target=@TARGET@ \
-            --sysroot="${SYSROOT}" \
-            -gcc-toolchain="${TOOLCHAIN}" \
-            -B"${LIBDIR}" \
-            -L"${LIBDIR}" \
-            "$@"
-          WRAPPER
-          sed -i "s|@NDK@|${NDK}|g; s|@ABI@|${{ matrix.abi }}|g; s|@API@|${{ matrix.api }}|g; s|@TARGET@|${{ matrix.target }}|g" \
-            "src-tauri/.cargo-wrappers/${{ matrix.target }}-wrapper.sh"
-          chmod +x "src-tauri/.cargo-wrappers/${{ matrix.target }}-wrapper.sh"
-          cat "src-tauri/.cargo-wrappers/${{ matrix.target }}-wrapper.sh"
-      - name: Configure cargo linker
-        run: |
           mkdir -p src-tauri/.cargo
           cat > src-tauri/.cargo/config.toml << TOML
           [target.${{ matrix.target }}]
-          linker = "${{ github.workspace }}/star-compass/src-tauri/.cargo-wrappers/${{ matrix.target }}-wrapper.sh"
-          rustflags = ["-C", "target-feature=+crt-static"]
+          linker = "${TOOLCHAIN}/bin/clang"
+          rustflags = [
+            "-C", "link-arg=--target=${{ matrix.target }}${{ matrix.api }}",
+            "-C", "link-arg=--sysroot=${SYSROOT}",
+            "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}",
+            "-C", "target-feature=+crt-static"
+          ]
           TOML
+          echo "----- generated config.toml -----"
           cat src-tauri/.cargo/config.toml
+          echo "----- verify clang exists -----"
+          ls -la "${TOOLCHAIN}/bin/clang"
       - name: Build static binary
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
-          cp target/${{ matrix.target }}/release/star-compass-tauri "target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/star-compass-tauri" "target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}"
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
