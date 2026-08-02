@@ -80,16 +80,20 @@ jobs:
         include:
           - target: aarch64-linux-android
             clang: aarch64-linux-android21-clang
-            api_level: "21"
+            abi: aarch64-linux-android
+            api: "21"
           - target: armv7-linux-androideabi
             clang: armv7a-linux-androideabi16-clang
-            api_level: "16"
+            abi: arm-linux-androideabi
+            api: "21"
           - target: i686-linux-android
             clang: i686-linux-android21-clang
-            api_level: "21"
+            abi: i686-linux-android
+            api: "21"
           - target: x86_64-linux-android
             clang: x86_64-linux-android21-clang
-            api_level: "21"
+            abi: x86_64-linux-android
+            api: "21"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -107,10 +111,16 @@ jobs:
       - name: Configure NDK linker per target
         run: |
           mkdir -p src-tauri/.cargo
+          # NDK lib path: sysroot/usr/lib/<abi>/<api>/
+          NDK="${{ github.workspace }}/android-ndk-r26b"
+          ABI="${{ matrix.abi }}"
+          API="${{ matrix.api }}"
+          LIB_PATH="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${ABI}/${API}"
+          echo "NDK lib path: ${LIB_PATH}"
           cat > src-tauri/.cargo/config.toml << TOML
           [target.${{ matrix.target }}]
-          linker = "${{ github.workspace }}/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang }}"
-          rustflags = ["-C", "target-feature=+crt-static"]
+          linker = "${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.clang }}"
+          rustflags = ["-C", "target-feature=+crt-static", "-L", "native=${LIB_PATH}"]
           TOML
           echo "=== .cargo/config.toml ==="
           cat src-tauri/.cargo/config.toml
