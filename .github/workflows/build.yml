@@ -92,10 +92,11 @@ jobs:
           unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
           echo "ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r26b" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
-      - name: Build and rename
+      - name: Build static binary
         run: |
           cd src-tauri
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} \
+            --config 'profile.release.rustflags=["-C", "target-feature=+crt-static"]'
           cp target/${{ matrix.target }}/release/star-compass-tauri target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
       - name: Upload binary
         uses: actions/upload-artifact@v4
