@@ -83,7 +83,7 @@ jobs:
             abi: aarch64-linux-android
             api: "21"
           - target: armv7-linux-androideabi
-            clang: armv7a-linux-androideabi16-clang
+            clang: armv7a-linux-androideabi-clang
             abi: arm-linux-androideabi
             api: "21"
           - target: i686-linux-android
