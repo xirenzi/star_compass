@@ -106,7 +106,7 @@ enum Commands {
 
     /// 初始化加密
     Init {
-        /// 安全等级：kan / zhi / ren / tian
+        /// 安全等级：kan(坎水) / xun(巽风) / li(离火) / qian(乾天) / 0-3
         tier: String,
 
         /// Unix 时间戳（秒）
@@ -254,7 +254,9 @@ fn run_cli(cli: &Cli) {
             let hex_bytes = hex::decode(clean_event)
                 .expect("事件哈希解析失败");
             let mut event_arr = [0u8; 32];
-            event_arr.copy_from_slice(&hex_bytes[..32]);
+            // 兼容任意长度：不足补0，超过截断
+            let n = hex_bytes.len().min(32);
+            event_arr[..n].copy_from_slice(&hex_bytes[..n]);
 
             let clean_personal = personal_hex.trim().trim_start_matches("0x");
             let mut hex_arr = [0u8; 64];

@@ -95,10 +95,10 @@ impl SecurityTier {
 
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
-            "kan" | "坎水" | "坎" | "艮渊" => Some(SecurityTier::KanWater),
-            "xun" | "巽风" | "巽" | "巽翎" => Some(SecurityTier::XunWind),
-            "li" | "离火" | "离" | "离曜" => Some(SecurityTier::LiFire),
-            "qian" | "乾天" | "乾" | "乾极" => Some(SecurityTier::QianHeaven),
+            "kan" | "坎水" | "坎" | "艮渊" | "0" | "tian" => Some(SecurityTier::KanWater),
+            "xun" | "巽风" | "巽" | "巽翎" | "1" | "ren" => Some(SecurityTier::XunWind),
+            "li" | "离火" | "离" | "离曜" | "2" => Some(SecurityTier::LiFire),
+            "qian" | "乾天" | "乾" | "乾极" | "3" => Some(SecurityTier::QianHeaven),
             _ => None,
         }
     }
