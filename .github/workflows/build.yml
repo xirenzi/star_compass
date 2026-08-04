@@ -57,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: star-compass-deb
-          path: target/debian/
+          path: src-tauri/target/debian/*.deb
           retention-days: 7
 
   # build-android: DISABLED - requires NDK debugging
