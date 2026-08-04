@@ -90,11 +90,20 @@ jobs:
           TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
           SYSROOT="${TOOLCHAIN}/sysroot"
           mkdir -p src-tauri/.cargo
+          
+          # Map rust target to NDK clang target
+          case "${{ matrix.target }}" in
+            aarch64-linux-android) CLANG_TARGET="aarch64-linux-android${{ matrix.api }}" ;;
+            armv7-linux-androideabi) CLANG_TARGET="armv7a-linux-androideabi${{ matrix.api }}" ;;
+            i686-linux-android) CLANG_TARGET="i686-linux-android${{ matrix.api }}" ;;
+            x86_64-linux-android) CLANG_TARGET="x86_64-linux-android${{ matrix.api }}" ;;
+          esac
+          
           cat > src-tauri/.cargo/config.toml << TOML
           [target.${{ matrix.target }}]
           linker = "${TOOLCHAIN}/bin/clang"
           rustflags = [
-            "-C", "link-arg=--target=${{ matrix.target }}${{ matrix.api }}",
+            "-C", "link-arg=--target=${CLANG_TARGET}",
             "-C", "link-arg=--sysroot=${SYSROOT}",
             "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}",
             "-C", "target-feature=+crt-static"
