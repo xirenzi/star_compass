@@ -65,9 +65,10 @@ jobs:
           - target: aarch64-linux-android
             abi: aarch64-linux-android
             api: "21"
-          - target: armv7-linux-androideabi
-            abi: arm-linux-androideabi
-            api: "21"
+          # armv7 temporarily disabled due to build issues
+          # - target: armv7-linux-androideabi
+          #   abi: arm-linux-androideabi
+          #   api: "21"
           - target: i686-linux-android
             abi: i686-linux-android
             api: "21"
