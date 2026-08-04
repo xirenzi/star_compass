@@ -105,15 +105,14 @@ jobs:
           rustflags = [
             "-C", "link-arg=--target=${CLANG_TARGET}",
             "-C", "link-arg=--sysroot=${SYSROOT}",
-            "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}",
-            "-C", "target-feature=+crt-static"
+            "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}"
           ]
           TOML
           echo "----- generated config.toml -----"
           cat src-tauri/.cargo/config.toml
           echo "----- verify clang exists -----"
           ls -la "${TOOLCHAIN}/bin/clang"
-      - name: Build static binary
+      - name: Build dynamic binary
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
