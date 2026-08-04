@@ -129,7 +129,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/**/*.AppImage
+            artifacts/**/star-compass-appimage
             artifacts/**/*.deb
             artifacts/**/*.exe
         env:
