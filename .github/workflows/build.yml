@@ -58,65 +58,60 @@ jobs:
           path: src-tauri/target/release/star-compass.deb
           retention-days: 7
 
-  build-android:
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-linux-android
-            abi: aarch64-linux-android
-            api: "21"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Add target
-        run: rustup target add ${{ matrix.target }}
-      - name: Install Android NDK r23b
-        run: |
-          curl -fsSL "https://dl.google.com/android/repository/android-ndk-r23b-linux.zip" -o /tmp/ndk.zip
-          unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
-      - name: Configure cargo linker (direct clang, no wrapper)
-        run: |
-          NDK="${{ github.workspace }}/android-ndk-r23b"
-          TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
-          SYSROOT="${TOOLCHAIN}/sysroot"
-          mkdir -p src-tauri/.cargo
-          
-          # Map rust target to NDK clang target
-          case "${{ matrix.target }}" in
-            aarch64-linux-android) CLANG_TARGET="aarch64-linux-android${{ matrix.api }}" ;;
-            armv7-linux-androideabi) CLANG_TARGET="armv7a-linux-androideabi${{ matrix.api }}" ;;
-            i686-linux-android) CLANG_TARGET="i686-linux-android${{ matrix.api }}" ;;
-            x86_64-linux-android) CLANG_TARGET="x86_64-linux-android${{ matrix.api }}" ;;
-          esac
-          
-          cat > src-tauri/.cargo/config.toml << TOML
-          [target.${{ matrix.target }}]
-          linker = "${TOOLCHAIN}/bin/clang"
-          rustflags = [
-            "-C", "link-arg=--target=${CLANG_TARGET}",
-            "-C", "link-arg=--sysroot=${SYSROOT}",
-            "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}"
-          ]
-          TOML
-          echo "----- generated config.toml -----"
-          cat src-tauri/.cargo/config.toml
-          echo "----- verify clang exists -----"
-          ls -la "${TOOLCHAIN}/bin/clang"
-      - name: Build dynamic binary
-        run: |
-          cd src-tauri
-          cargo build --release --target ${{ matrix.target }}
-          cp "target/${{ matrix.target }}/release/star-compass-tauri" "target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}"
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: star-compass-android-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
-          retention-days: 7
+  # build-android: DISABLED - requires NDK debugging
+  # TODO: Fix NDK linker issues and re-enable
+  # build-android:
+  #   strategy:
+  #     matrix:
+  #       include:
+  #         - target: aarch64-linux-android
+  #           abi: aarch64-linux-android
+  #           api: "21"
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - name: Add target
+  #       run: rustup target add ${{ matrix.target }}
+  #     - name: Install Android NDK r23b
+  #       run: |
+  #         curl -fsSL "https://dl.google.com/android/repository/android-ndk-r23b-linux.zip" -o /tmp/ndk.zip
+  #         unzip -q /tmp/ndk.zip -d "${{ github.workspace }}"
+  #     - name: Configure cargo linker
+  #       run: |
+  #         NDK="${{ github.workspace }}/android-ndk-r23b"
+  #         TOOLCHAIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64"
+  #         SYSROOT="${TOOLCHAIN}/sysroot"
+  #         mkdir -p src-tauri/.cargo
+  #         case "${{ matrix.target }}" in
+  #           aarch64-linux-android) CLANG_TARGET="aarch64-linux-android${{ matrix.api }}" ;;
+  #           armv7-linux-androideabi) CLANG_TARGET="armv7a-linux-androideabi${{ matrix.api }}" ;;
+  #           i686-linux-android) CLANG_TARGET="i686-linux-android${{ matrix.api }}" ;;
+  #           x86_64-linux-android) CLANG_TARGET="x86_64-linux-android${{ matrix.api }}" ;;
+  #         esac
+  #         cat > src-tauri/.cargo/config.toml << TOML
+  #         [target.${{ matrix.target }}]
+  #         linker = "${TOOLCHAIN}/bin/clang"
+  #         rustflags = [
+  #           "-C", "link-arg=--target=${CLANG_TARGET}",
+  #           "-C", "link-arg=--sysroot=${SYSROOT}",
+  #           "-C", "link-arg=-gcc-toolchain=${TOOLCHAIN}"
+  #         ]
+  #         TOML
+  #     - name: Build dynamic binary
+  #       run: |
+  #         cd src-tauri
+  #         cargo build --release --target ${{ matrix.target }}
+  #         cp "target/${{ matrix.target }}/release/star-compass-tauri" "target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}"
+  #     - name: Upload binary
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: star-compass-android-${{ matrix.target }}
+  #         path: src-tauri/target/${{ matrix.target }}/release/star-compass-android-${{ matrix.target }}
+  #         retention-days: 7
 
   release:
-    needs: [build-linux, build-windows, build-android]
+    needs: [build-linux, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -135,6 +130,5 @@ jobs:
             artifacts/**/*.AppImage
             artifacts/**/*.deb
             artifacts/**/*.exe
-            artifacts/**/star-compass-android-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
