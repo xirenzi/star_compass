@@ -1,6 +1,6 @@
 //! 混合密钥交换：X25519 + Kyber（简化实现）
 
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, RngCore, thread_rng};
 use zeroize::ZeroizeOnDrop;
 
 #[derive(ZeroizeOnDrop)]
@@ -38,6 +38,21 @@ impl X25519KeyPair {
         let scalar = curve25519_dalek::scalar::Scalar::from_bytes_mod_order(self.secret);
         let peer = MontgomeryPoint(*peer_public);
         (scalar * peer).to_bytes()
+    }
+
+    /// 从已有私钥恢复（用于 CLI 持久化）
+    pub fn restore(secret: [u8; 32]) -> Self {
+        let mut s = secret;
+        s[0] &= 248;
+        s[31] &= 127;
+        s[31] |= 64;
+        let mut base = [0u8; 32];
+        base[0] = 9;
+        use curve25519_dalek::montgomery::MontgomeryPoint;
+        let base_pt = MontgomeryPoint(base);
+        let scalar = curve25519_dalek::scalar::Scalar::from_bytes_mod_order(s);
+        let public = (scalar * base_pt).to_bytes();
+        Self { public, secret: s }
     }
 }
 
@@ -121,6 +136,14 @@ impl HybridKeyExchange {
         hybrid[32..].copy_from_slice(&k_shared);
         hybrid
     }
+
+    /// 从已有 x25519 私钥恢复（用于 CLI 持久化）
+    pub fn restore(x25519_secret: [u8; 32]) -> Self {
+        Self {
+            x25519: X25519KeyPair::restore(x25519_secret),
+            kyber: KyberKeyPair::generate(&mut thread_rng()),
+        }
+    }
 }
 
 /// 混合密钥对（用于棘轮公钥）
@@ -160,6 +183,11 @@ impl HybridKeyPair {
         }
     }
 
+        /// 获取 kyber 私钥字节
+    pub fn kyber_secret(&self) -> [u8; 1632] {
+        self.kyber.secret
+    }
+
     pub fn public_key(&self) -> HybridPublicKey {
         HybridPublicKey {
             x25519: self.x25519.public,
@@ -174,6 +202,37 @@ impl HybridKeyPair {
     /// 获取 x25519 私钥字节
     pub fn x25519_secret(&self) -> [u8; 32] {
         self.x25519.secret
+    }
+
+    /// 从已有密钥材料恢复密钥对（用于 CLI 状态重建）
+    pub fn restore(
+        x25519_secret: &[u8; 32],
+        x25519_public: &[u8; 32],
+        kyber_secret: &[u8; 1632],
+        kyber_public: &[u8; 800],
+    ) -> Self {
+        // 重建 x25519（只设置字段，不重新计算公钥）
+        let mut xsk = [0u8; 32];
+        xsk.copy_from_slice(x25519_secret);
+        let xpk: [u8; 32] = *x25519_public;
+
+        // 重建 kyber
+        let mut ksk = [0u8; 1632];
+        ksk.copy_from_slice(kyber_secret);
+        let mut kpk = [0u8; 800];
+        kpk.copy_from_slice(kyber_public);
+
+        Self {
+            x25519: X25519KeyPair {
+                public: xpk,
+                secret: xsk,
+            },
+            kyber: KyberKeyPair {
+                public: kpk,
+                secret: ksk,
+                ciphertext: [0u8; 768],
+            },
+        }
     }
 }
 

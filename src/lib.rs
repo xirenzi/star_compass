@@ -54,6 +54,11 @@ impl StarCompass {
     }
 
     pub fn init_with_shared_secret(&mut self, shared: &[u8; 64]) {
+        if self.keyring.is_none() {
+            // 用默认盐初始化 keyring（用于 CLI 密钥交换模式，无天文数据）
+            let default_salt = ThreeCaSalt::default_for_tier(self.tier);
+            self.keyring = Some(ThreeCaKeyRing::new(self.tier, default_salt));
+        }
         if let Some(ref mut kr) = self.keyring {
             kr.init(shared);
         }

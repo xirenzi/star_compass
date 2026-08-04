@@ -240,6 +240,17 @@ pub struct ThreeCaSalt {
 }
 
 impl ThreeCaSalt {
+    /// 从字节数组构造（用于 ratchet 状态恢复）
+    pub fn from_bytes(arr: &[u8; 256]) -> Self {
+        let mut planet_bits = [0u8; 21];
+        let mut event_hash = [0u8; 32];
+        let mut personal_hex = [0u8; 64];
+        planet_bits.copy_from_slice(&arr[..21]);
+        event_hash.copy_from_slice(&arr[21..53]);
+        personal_hex.copy_from_slice(&arr[53..117]);
+        Self { planet_bits, event_hash, personal_hex }
+    }
+
     /// 合成三才盐
     pub fn synthesize(&self) -> Vec<u8> {
         let mut salt = Vec::with_capacity(21 + 32 + 64);
@@ -261,6 +272,23 @@ impl ThreeCaSalt {
 
     pub fn salt_len(&self) -> usize {
         21 + 32 + 64
+    }
+}
+
+impl Default for ThreeCaSalt {
+    fn default() -> Self {
+        Self {
+            planet_bits: [0u8; 21],
+            event_hash: [0u8; 32],
+            personal_hex: [0u8; 64],
+        }
+    }
+}
+
+impl ThreeCaSalt {
+    /// 创建适用于 CLI 密钥交换模式的默认盐（零值，对所有 tier 通用）
+    pub fn default_for_tier(_tier: crate::tiers::SecurityTier) -> Self {
+        Self::default()
     }
 }
 

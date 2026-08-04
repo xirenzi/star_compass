@@ -8,7 +8,7 @@ pub mod ratchet;
 
 pub use aesgcm::{AeadCipher, BlockAuth, HmacTransport, NonceData};
 pub use hkdf::KeyDeriver;
-pub use kyber_x25519::{HybridKeyExchange, X25519KeyPair, KyberKeyPair, Ed25519KeyPair};
+pub use kyber_x25519::{HybridKeyExchange, HybridKeyPair, X25519KeyPair, KyberKeyPair, Ed25519KeyPair};
 pub use merkle::{MerkleProof, MerkleTree, LeafNode};
 
 pub const BLOCK_SIZE: usize = 128;

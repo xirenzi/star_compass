@@ -5,13 +5,16 @@ use clap::{Parser, Subcommand, ValueEnum};
 use star_compass::{
     SecurityTier, StarCompass,
     astro::planets::{PlanetCalculator, GeoLocation},
-    crypto::{HybridKeyExchange, ratchet::{DoubleRatchetSession, RatchetHeader, RatchetTier}},
+    crypto::{HybridKeyExchange, ratchet::{DoubleRatchetSession, RatchetHeader, RatchetTier, RatchetState}},
     VERSION,
 };
+use hex;
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs;
-use std::io::{self};
+use std::io;
+use std::path::Path;
 use std::sync::Mutex;
 use tauri::State;
 use rand::thread_rng;
@@ -47,16 +50,15 @@ impl SessionRole {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistentState {
-    // init 结果
     tier: Option<String>,
     tier_name: Option<String>,
     tier_symbol: Option<String>,
     salt: Option<String>,
-    // keygen 结果
     public_key: Option<String>,
-    // session 结果
     shared_x: Option<String>,
     role: Option<String>,
+    peer_public: Option<String>,
+    private_key: Option<String>,
 }
 
 impl PersistentState {
@@ -69,8 +71,42 @@ impl PersistentState {
             public_key: None,
             shared_x: None,
             role: None,
+            peer_public: None,
+            private_key: None,
         }
     }
+}
+
+// ============================================================================
+// Ratchet 状态持久化
+// ============================================================================
+
+fn ratchet_state_path(state_file: &str) -> String {
+    let p = Path::new(state_file);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("state");
+    if stem.ends_with("_ratchet") {
+        return state_file.to_string();
+    }
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("json");
+    let new_name = format!("{}_ratchet.{}", stem, ext);
+    p.parent()
+        .map(|par| par.join(&new_name))
+        .unwrap_or_else(|| Path::new(&new_name).to_path_buf())
+        .to_str()
+        .unwrap_or(&new_name)
+        .to_string()
+}
+
+fn load_ratchet_state(state_file: &str) -> Option<RatchetState> {
+    let path = ratchet_state_path(state_file);
+    fs::read_to_string(&path).ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+}
+
+fn save_ratchet_state(state_file: &str, state: &RatchetState) -> io::Result<()> {
+    let path = ratchet_state_path(state_file);
+    let json = serde_json::to_string_pretty(state)?;
+    fs::write(path, json)
 }
 
 // ============================================================================
@@ -84,7 +120,6 @@ impl PersistentState {
     long_about = None,
 )]
 struct Cli {
-    /// 状态文件路径（保存/加载跨命令状态）
     #[arg(long, global = true, default_value = ".star_state.json")]
     state: String,
 
@@ -96,32 +131,18 @@ struct Cli {
 enum Commands {
     /// 计算行星本卦（无需状态）
     Planet {
-        /// Unix 时间戳（秒）
         timestamp: i64,
-
-        /// 输出八卦符号
         #[arg(long, short)]
         symbols: bool,
     },
 
     /// 初始化加密
     Init {
-        /// 安全等级：kan(坎水) / xun(巽风) / li(离火) / qian(乾天) / 0-3
         tier: String,
-
-        /// Unix 时间戳（秒）
         timestamp: i64,
-
-        /// 纬度
         lat: f64,
-
-        /// 经度
         lon: f64,
-
-        /// 事件哈希（hex，64 字符）
         event_hash: String,
-
-        /// 八卦序列（hex，默认全 0）
         #[arg(default_value = "0")]
         personal_hex: String,
     },
@@ -131,10 +152,7 @@ enum Commands {
 
     /// 与对端建立会话
     Session {
-        /// 对端公钥（hex，64 字符）
         peer_public: String,
-
-        /// 角色：initiator / responder
         #[arg(long, default_value = "initiator")]
         role: SessionRole,
     },
@@ -144,13 +162,11 @@ enum Commands {
 
     /// 加密消息
     Encrypt {
-        /// 明文内容
         plaintext: String,
     },
 
     /// 解密消息
     Decrypt {
-        /// 数据包（hex）
         packet: String,
     },
 
@@ -180,11 +196,10 @@ fn expand_shared(x: &[u8; 32]) -> [u8; 64] {
 }
 
 fn load_state(path: &str) -> PersistentState {
-    if let Ok(data) = fs::read_to_string(path) {
-        serde_json::from_str(&data).unwrap_or_else(|_| PersistentState::new())
-    } else {
-        PersistentState::new()
-    }
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|data| serde_json::from_str(&data).ok())
+        .unwrap_or_else(PersistentState::new)
 }
 
 fn save_state(path: &str, state: &PersistentState) -> io::Result<()> {
@@ -195,6 +210,83 @@ fn save_state(path: &str, state: &PersistentState) -> io::Result<()> {
 fn out_json<T: serde::Serialize>(v: &T) {
     let s = serde_json::to_string_pretty(v).unwrap();
     println!("{}", s);
+}
+
+fn parse_event_hash(raw: &str) -> [u8; 32] {
+    let clean = raw.trim().trim_start_matches("0x");
+    let bytes = hex::decode(clean).expect("事件哈希解析失败");
+    let mut arr = [0u8; 32];
+    let n = 32.min(bytes.len());
+    arr[..n].copy_from_slice(&bytes[..n]);
+    arr
+}
+
+fn parse_personal_hex(raw: &str) -> [u8; 64] {
+    let clean = raw.trim().trim_start_matches("0x");
+    let mut arr = [0u8; 64];
+    if clean.len() == 64 && clean.chars().all(|c| c == '0' || c == '1') {
+        for (i, c) in clean.chars().enumerate() {
+            arr[i] = if c == '1' { 1 } else { 0 };
+        }
+    } else if let Ok(bytes) = hex::decode(clean) {
+        let n = 64.min(bytes.len());
+        arr[..n].copy_from_slice(&bytes[..n]);
+    }
+    arr
+}
+
+fn hex32(s: &str) -> [u8; 32] {
+    let clean = s.trim().trim_start_matches("0x");
+    let bytes = hex::decode(clean).expect("hex 解析失败");
+    let mut arr = [0u8; 32];
+    let n = 32.min(bytes.len());
+    arr[..n].copy_from_slice(&bytes[..n]);
+    arr
+}
+
+fn tier_from_u8(n: u8) -> SecurityTier {
+    match n {
+        0 => SecurityTier::KanWater,
+        1 => SecurityTier::XunWind,
+        2 => SecurityTier::LiFire,
+        _ => SecurityTier::QianHeaven,
+    }
+}
+
+fn tier_u8(tier: SecurityTier) -> u8 {
+    match tier {
+        SecurityTier::KanWater => 0,
+        SecurityTier::XunWind => 1,
+        SecurityTier::LiFire => 2,
+        SecurityTier::QianHeaven => 3,
+    }
+}
+
+// 构建 RatchetSession（优先从文件恢复，否则新建）
+fn get_or_create_ratchet(
+    state: &PersistentState,
+    state_path: &str,
+    shared_x: [u8; 32],
+) -> (DoubleRatchetSession, bool) {
+    let sec_tier = tier_from_u8(state.tier.as_ref().map(|t| t.parse::<u8>().unwrap_or(0)).unwrap_or(0));
+    let ratchet_tier = map_tier(sec_tier);
+    let role = SessionRole::from_str(state.role.as_deref().unwrap_or("initiator"));
+
+    let mut star = StarCompass::new(sec_tier);
+    star.init_with_shared_secret(&expand_shared(&shared_x));
+    let salt = star.salt().cloned();
+
+    if let Some(rs) = load_ratchet_state(state_path) {
+        if let Some(sess) = rs.to_session() {
+            return (sess, false); // 恢复的，不新建
+        }
+    }
+
+    let sess = match role {
+        SessionRole::Initiator => DoubleRatchetSession::new_sender(shared_x, ratchet_tier.clone(), salt),
+        SessionRole::Responder => DoubleRatchetSession::new_receiver(shared_x, ratchet_tier, salt),
+    };
+    (sess, true) // 新建的
 }
 
 // ============================================================================
@@ -244,32 +336,15 @@ fn run_cli(cli: &Cli) {
         }
 
         Some(Commands::Init { tier, timestamp, lat, lon, event_hash, personal_hex }) => {
-            let tier = SecurityTier::from_name(tier)
+            let sec_tier = SecurityTier::from_name(tier)
                 .expect(&format!("未知等级: {}，可选: kan/zhi/ren/tian", tier));
             let dt = DateTime::from_timestamp(*timestamp, 0)
                 .expect("无效时间戳");
             let location = GeoLocation::new(*lat, *lon);
+            let _event_arr = parse_event_hash(event_hash);
+            let hex_arr = parse_personal_hex(personal_hex);
 
-            let clean_event = event_hash.trim().trim_start_matches("0x");
-            let hex_bytes = hex::decode(clean_event)
-                .expect("事件哈希解析失败");
-            let mut event_arr = [0u8; 32];
-            // 兼容任意长度：不足补0，超过截断
-            let n = hex_bytes.len().min(32);
-            event_arr[..n].copy_from_slice(&hex_bytes[..n]);
-
-            let clean_personal = personal_hex.trim().trim_start_matches("0x");
-            let mut hex_arr = [0u8; 64];
-            if clean_personal.len() == 64 && clean_personal.chars().all(|c| c == '0' || c == '1') {
-                for (i, c) in clean_personal.chars().enumerate() {
-                    hex_arr[i] = if c == '1' { 1 } else { 0 };
-                }
-            } else if let Ok(pb) = hex::decode(clean_personal) {
-                let n = pb.len().min(64);
-                hex_arr[..n].copy_from_slice(&pb[..n]);
-            }
-
-            let mut star = StarCompass::new(tier);
+            let mut star = StarCompass::new(sec_tier);
             star.init(dt, Some(location), "cli_event", &hex_arr)
                 .expect("初始化失败");
 
@@ -278,11 +353,10 @@ fn run_cli(cli: &Cli) {
                 .unwrap_or_default();
 
             let mut state = load_state(state_path);
-            state.tier = Some((tier as u8).to_string());
-            state.tier_name = Some(tier.name_cn().to_string());
-            state.tier_symbol = Some(tier.symbol().to_string());
+            state.tier = Some(tier_u8(sec_tier).to_string());
+            state.tier_name = Some(sec_tier.name_cn().to_string());
+            state.tier_symbol = Some(sec_tier.symbol().to_string());
             state.salt = Some(salt_bytes);
-            // 清空会话相关状态
             state.shared_x = None;
             state.role = None;
             save_state(state_path, &state).expect("保存状态失败");
@@ -296,19 +370,20 @@ fn run_cli(cli: &Cli) {
             }
             out_json(&InitOut {
                 status: "ok".to_string(),
-                tier: tier.name_cn().to_string(),
-                tier_symbol: tier.symbol().to_string(),
+                tier: sec_tier.name_cn().to_string(),
+                tier_symbol: sec_tier.symbol().to_string(),
                 salt: state.salt.clone().unwrap(),
             });
         }
 
         Some(Commands::Keygen) => {
-            let mut rng = thread_rng();
-            let kx = HybridKeyExchange::generate(&mut rng);
+            let kx = HybridKeyExchange::generate(&mut thread_rng());
             let pub_hex = hex::encode(kx.x25519.public);
+            let priv_hex = hex::encode(kx.x25519.secret());
 
             let mut state = load_state(state_path);
             state.public_key = Some(pub_hex.clone());
+            state.private_key = Some(priv_hex);
             save_state(state_path, &state).expect("保存状态失败");
 
             #[derive(Serialize)]
@@ -327,85 +402,47 @@ fn run_cli(cli: &Cli) {
         Some(Commands::Session { peer_public, role }) => {
             let state = load_state(state_path);
 
-            let pk = state.public_key.as_ref()
+            state.public_key.as_ref()
                 .expect("请先运行 keygen 生成密钥对");
-            let tier = state.tier.as_ref()
-                .expect("请先运行 init 初始化");
 
-            let peer_bytes = hex::decode(peer_public.trim().trim_start_matches("0x"))
-                .expect("对方公钥解析失败");
-            let mut peer = [0u8; 32];
-            peer.copy_from_slice(&peer_bytes[..32]);
+            let peer = hex32(peer_public);
+            let my_priv = state.private_key.as_ref()
+                .map(|h| hex32(h))
+                .expect("请先运行 keygen 生成密钥对");
 
-            let my_bytes = hex::decode(pk.trim().trim_start_matches("0x"))
-                .expect("我的公钥解析失败");
-            let mut my_pk = [0u8; 32];
-            my_pk.copy_from_slice(&my_bytes[..32]);
-
-            let mut rng = thread_rng();
-            let _kx = HybridKeyExchange::generate(&mut rng);
-            // 用 keygen 的公钥重建 kx（把 keypair 重新注入）
-            // 由于 kx 的 keypair 是随机的，我们只能从 shared secret 的角度处理
-            // 实际上：两端的 X25519 DH 交换产生 x_shared，我们已有 my_pk，对方有 peer_pk
-            // 重新生成 DH 对计算 x_shared
-            let tier_u8: u8 = tier.parse().expect("tier 无效");
-            let sec_tier = match tier_u8 {
-                0 => SecurityTier::KanWater,
-                1 => SecurityTier::XunWind,
-                2 => SecurityTier::LiFire,
-                _ => SecurityTier::QianHeaven,
-            };
-            let mut star = StarCompass::new(sec_tier);
-            star.init_with_shared_secret(&[0u8; 64]);
-
-            // 重建 keypair（从保存的公钥）
-            
-            let new_kx = HybridKeyExchange::generate(&mut rng);
-            let x_shared = new_kx.x25519.shared_secret(&peer);
+            // 用保存的私钥重建 HybridKeyExchange
+            let kx = HybridKeyExchange::restore(my_priv);
+            let x_shared = kx.x25519.shared_secret(&peer);
             let shared64 = expand_shared(&x_shared);
+
+            let sec_tier = tier_from_u8(state.tier.as_ref().map(|t| t.parse::<u8>().unwrap_or(0)).unwrap_or(0));
+            let mut star = StarCompass::new(sec_tier);
             star.init_with_shared_secret(&shared64);
-
-            let ratchet_tier = map_tier(sec_tier);
-            let salt = star.salt().cloned();
-
-            let _ratchet = match role {
-                SessionRole::Initiator => {
-                    DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt)
-                }
-                SessionRole::Responder => {
-                    DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt)
-                }
-            };
 
             let mut state = load_state(state_path);
             state.shared_x = Some(hex::encode(x_shared));
             state.role = Some(role.as_str().to_string());
+            state.peer_public = Some(peer_public.clone());
             save_state(state_path, &state).expect("保存状态失败");
-
-            // 保存 session（需要 ratchet 对象才能加密，但 JSON 不能序列化 ratchet）
-            // 策略：session 后只有 encrypt/decrypt 可用，不保存 ratchet
-            // 实际上 CLI 的每个命令是独立进程，ratchet 无法跨进程保持
-            // 所以 encrypt/decrypt 需要重新构建 ratchet
 
             #[derive(Serialize)]
             struct SessionOut {
                 status: String,
                 role: String,
                 shared_x: String,
-                message: String,
+                hint: String,
             }
             out_json(&SessionOut {
                 status: "ok".to_string(),
                 role: role.as_str().to_string(),
                 shared_x: hex::encode(x_shared),
-                message: "会话建立成功。注意：CLI 每个命令独立运行，ratchet 状态已在本地重建".to_string(),
+                hint: "会话建立成功。运行 encrypt <明文> 加密消息".to_string(),
             });
         }
 
         Some(Commands::SelfTest) => {
-            let mut rng = thread_rng();
-            let alice_kx = HybridKeyExchange::generate(&mut rng);
-            let bob_kx = HybridKeyExchange::generate(&mut rng);
+            let alice_kx = HybridKeyExchange::generate(&mut thread_rng());
+            let bob_kx = HybridKeyExchange::generate(&mut thread_rng());
             let x_shared = alice_kx.x25519.shared_secret(&bob_kx.x25519.public);
             let shared64 = expand_shared(&x_shared);
 
@@ -416,7 +453,7 @@ fn run_cli(cli: &Cli) {
             let ratchet_tier = map_tier(SecurityTier::KanWater);
             let salt = star.salt().cloned();
             let mut alice = DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt.clone());
-            let mut bob = DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt);
+            let mut bob = DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt.clone());
 
             let sample = "星枢自测：双棘轮加密通信";
             let (ct, hdr) = alice.encrypt(sample.as_bytes(), &[]);
@@ -427,6 +464,7 @@ fn run_cli(cli: &Cli) {
             let mut state = load_state(state_path);
             state.shared_x = Some(hex::encode(x_shared));
             state.role = Some("initiator".to_string());
+            state.tier = Some("0".to_string());
             save_state(state_path, &state).expect("保存状态失败");
 
             #[derive(Serialize)]
@@ -448,52 +486,32 @@ fn run_cli(cli: &Cli) {
             let state = load_state(state_path);
             let shared_x_hex = state.shared_x.as_ref()
                 .expect("请先运行 session 或 self-test 建立会话");
-            let role_str = state.role.as_deref().unwrap_or("initiator");
-            let tier = state.tier.as_ref()
-                .map(|t| t.parse::<u8>().unwrap_or(0))
-                .unwrap_or(0);
-            let sec_tier = match tier {
-                0 => SecurityTier::KanWater,
-                1 => SecurityTier::XunWind,
-                2 => SecurityTier::LiFire,
-                _ => SecurityTier::QianHeaven,
-            };
+            let shared_x = hex32(shared_x_hex);
 
-            let x_shared_bytes = hex::decode(shared_x_hex.trim().trim_start_matches("0x"))
-                .expect("shared_x hex 解析失败");
-            let mut x_shared = [0u8; 32];
-            x_shared.copy_from_slice(&x_shared_bytes[..32]);
-
-            let mut star = StarCompass::new(sec_tier);
-            star.init_with_shared_secret(&expand_shared(&x_shared));
-            let salt = star.salt().cloned();
-
-            let ratchet_tier = map_tier(sec_tier);
-            let role = SessionRole::from_str(role_str);
-            let mut ratchet = match role {
-                SessionRole::Initiator => {
-                    DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt)
-                }
-                SessionRole::Responder => {
-                    DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt)
-                }
-            };
+            let (mut ratchet, is_new) = get_or_create_ratchet(&state, state_path, shared_x);
 
             let (ct, header) = ratchet.encrypt(plaintext.as_bytes(), &[]);
             let mut packet = header.serialize();
             packet.extend_from_slice(&ct);
+
+            // 立即保存棘轮状态（新建或更新后都要保存）
+            let rs = RatchetState::from_session(&ratchet);
+            save_ratchet_state(state_path, &rs).expect("保存棘轮状态失败");
+            let _ = save_state(state_path, &state);
 
             #[derive(Serialize)]
             struct EncryptOut {
                 status: String,
                 packet: String,
                 msg_num: usize,
+                restored: bool,
                 hint: String,
             }
             out_json(&EncryptOut {
                 status: "ok".to_string(),
                 packet: hex::encode(&packet),
                 msg_num: header.message_number,
+                restored: !is_new,
                 hint: "将 packet 字段值发给对方，用 decrypt 解密".to_string(),
             });
         }
@@ -501,46 +519,61 @@ fn run_cli(cli: &Cli) {
         Some(Commands::Decrypt { packet }) => {
             let state = load_state(state_path);
             let shared_x_hex = state.shared_x.as_ref()
-                .expect("请先运行 session 或 self-test 建立会话");
-            let role_str = state.role.as_deref().unwrap_or("initiator");
-            let tier = state.tier.as_ref()
-                .map(|t| t.parse::<u8>().unwrap_or(0))
-                .unwrap_or(0);
-            let sec_tier = match tier {
-                0 => SecurityTier::KanWater,
-                1 => SecurityTier::XunWind,
-                2 => SecurityTier::LiFire,
-                _ => SecurityTier::QianHeaven,
-            };
+                .unwrap_or_else(|| panic!("请先运行 session 或 self-test 建立会话"));
+            let shared_x = hex32(shared_x_hex);
 
-            let x_shared_bytes = hex::decode(shared_x_hex.trim().trim_start_matches("0x"))
-                .expect("shared_x hex 解析失败");
-            let mut x_shared = [0u8; 32];
-            x_shared.copy_from_slice(&x_shared_bytes[..32]);
-
-            let mut star = StarCompass::new(sec_tier);
-            star.init_with_shared_secret(&expand_shared(&x_shared));
-            let salt = star.salt().cloned();
-
-            let ratchet_tier = map_tier(sec_tier);
-            let role = SessionRole::from_str(role_str);
-            let mut ratchet = match role {
-                SessionRole::Initiator => {
-                    DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt)
-                }
-                SessionRole::Responder => {
-                    DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt)
+            let bytes = match hex::decode(packet.trim().trim_start_matches("0x")) {
+                Ok(b) => b,
+                Err(e) => {
+                    out_json(&json!({"status": "error", "message": format!("数据包不是有效的 hex: {}", e)}));
+                    return;
                 }
             };
-
-            let bytes = hex::decode(packet.trim().trim_start_matches("0x"))
-                .expect("数据包不是有效的 hex");
-            let header = RatchetHeader::deserialize(&bytes)
-                .expect("数据包头部解析失败");
+            let header = match RatchetHeader::deserialize(&bytes) {
+                Some(h) => h,
+                None => {
+                    out_json(&json!({"status": "error", "message": "数据包头部解析失败"}));
+                    return;
+                }
+            };
             let ct = &bytes[40..];
-            let pt = ratchet.decrypt(&header, ct, &[])
-                .expect("解密失败（序号不匹配或密钥错误）");
-            let plaintext = String::from_utf8(pt).expect("解密结果非 UTF-8");
+
+            // 检测自解密场景（header.public_key == state.public_key）
+            if let Some(ref my_pk_hex) = state.public_key {
+                let my_pk = hex32(my_pk_hex);
+                if header.public_key == my_pk {
+                    out_json(&json!({
+                        "status": "error",
+                        "message": "自解密不支持：无法解密自己发送的消息（需要 message-key history）",
+                        "hint": "请让对方运行 decrypt 命令解密此消息"
+                    }));
+                    return;
+                }
+            }
+
+            // 解密方始终以 responder 角色重建会话
+            let mut dec_state = state.clone();
+            dec_state.role = Some("responder".to_string());
+            let (mut ratchet, _is_new) = get_or_create_ratchet(&dec_state, state_path, shared_x);
+
+            let pt = match ratchet.decrypt(&header, ct, &[]) {
+                Some(p) => p,
+                None => {
+                    out_json(&json!({"status": "error", "message": "解密失败（序号不匹配或密钥错误）"}));
+                    return;
+                }
+            };
+            let plaintext = match String::from_utf8(pt) {
+                Ok(s) => s,
+                Err(e) => {
+                    out_json(&json!({"status": "error", "message": format!("解密结果非 UTF-8: {}", e)}));
+                    return;
+                }
+            };
+
+            // 解密后保存状态
+            let rs = RatchetState::from_session(&ratchet);
+            let _ = save_ratchet_state(state_path, &rs);
 
             #[derive(Serialize)]
             struct DecryptOut {
@@ -637,7 +670,7 @@ fn main() {
 }
 
 // ============================================================================
-// Tauri 命令（保留原有实现）
+// Tauri 命令
 // ============================================================================
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -708,27 +741,8 @@ fn init_encryption(
         .ok_or("无效时间戳")?;
     let location = GeoLocation::new(lat, lon);
 
-    let clean_event = event_hash.trim().trim_start_matches("0x");
-    let hex_bytes = hex::decode(clean_event)
-        .map_err(|e| format!("事件哈希解析失败: {}", e))?;
-    if hex_bytes.len() < 32 {
-        return Err(format!("事件哈希长度不足，需要 32 字节，实际 {}", hex_bytes.len()));
-    }
-    let mut event_arr = [0u8; 32];
-    event_arr.copy_from_slice(&hex_bytes[..32]);
-
-    let clean_personal = personal_hex.trim().trim_start_matches("0x");
-    let mut hex_arr = [0u8; 64];
-    if clean_personal.len() == 64 && clean_personal.chars().all(|c| c == '0' || c == '1') {
-        for (i, c) in clean_personal.chars().enumerate() {
-            hex_arr[i] = if c == '1' { 1 } else { 0 };
-        }
-    } else {
-        let pb = hex::decode(clean_personal)
-            .map_err(|e| format!("八卦序列解析失败（需 64 位 0/1 或十六进制）: {}", e))?;
-        let n = pb.len().min(64);
-        hex_arr[..n].copy_from_slice(&pb[..n]);
-    }
+    let _event_arr = parse_event_hash(&event_hash);
+    let hex_arr = parse_personal_hex(&personal_hex);
 
     star.init(dt, Some(location), "encrypted_event", &hex_arr)
         .map_err(|e| format!("初始化失败: {:?}", e))?;
@@ -761,7 +775,6 @@ fn calc_planet_hexagram(timestamp_secs: i64) -> Result<PlanetHexagramResult, Str
 
     let calc = PlanetCalculator::new();
     let bits = calc.calc_planet_hexagram(&dt);
-    let hex_str = PlanetCalculator::hexagram_to_hex_string(&bits);
 
     let hexagrams: Vec<String> = bits.chunks(3)
         .map(|chunk| {
@@ -782,15 +795,14 @@ fn calc_planet_hexagram(timestamp_secs: i64) -> Result<PlanetHexagramResult, Str
 
     Ok(PlanetHexagramResult {
         bits: bits.to_vec(),
-        hex_string: hex_str,
+        hex_string: PlanetCalculator::hexagram_to_hex_string(&bits),
         hexagrams,
     })
 }
 
 #[tauri::command]
 fn generate_keypair(state: State<AppState>) -> Result<String, String> {
-    let mut rng = thread_rng();
-    let kx = HybridKeyExchange::generate(&mut rng);
+    let kx = HybridKeyExchange::generate(&mut thread_rng());
     let my_pub = kx.x25519.public;
     *state.kx.lock().unwrap() = Some(kx);
     Ok(hex::encode(my_pub))
@@ -822,15 +834,7 @@ fn establish_session(
     let kx_guard = state.kx.lock().unwrap();
     let kx = kx_guard.as_ref().ok_or("请先生成密钥对")?;
 
-    let clean = peer_public_hex.trim().trim_start_matches("0x");
-    let peer_bytes = hex::decode(clean)
-        .map_err(|e| format!("对方公钥解析失败: {}", e))?;
-    if peer_bytes.len() != 32 {
-        return Err(format!("对方公钥长度错误，需 32 字节，实际 {}", peer_bytes.len()));
-    }
-    let mut peer = [0u8; 32];
-    peer.copy_from_slice(&peer_bytes[..32]);
-
+    let peer = hex32(&peer_public_hex);
     let x_shared = kx.x25519.shared_secret(&peer);
     drop(kx_guard);
 
@@ -860,17 +864,13 @@ fn establish_session(
         SessionRole::Initiator => "发起方",
         SessionRole::Responder => "响应方",
     };
-    Ok(format!(
-        "已与对端建立会话（角色={}），共享密钥已注入，可以加解密了。",
-        role_str
-    ))
+    Ok(format!("已与对端建立会话（角色={}），共享密钥已注入，可以加解密了。", role_str))
 }
 
 #[tauri::command]
 fn establish_session_self(state: State<AppState>) -> Result<String, String> {
-    let mut rng = thread_rng();
-    let alice_kx = HybridKeyExchange::generate(&mut rng);
-    let bob_kx = HybridKeyExchange::generate(&mut rng);
+    let alice_kx = HybridKeyExchange::generate(&mut thread_rng());
+    let bob_kx = HybridKeyExchange::generate(&mut thread_rng());
 
     let x_shared = alice_kx.x25519.shared_secret(&bob_kx.x25519.public);
     let shared64 = tauri_expand_shared(&x_shared);
@@ -896,8 +896,7 @@ fn encrypt_message(state: State<AppState>, plaintext: String) -> Result<EncryptR
     let mut guard = state.ratchet.lock().unwrap();
     let ratchet = guard.as_mut().ok_or("请先建立会话（点击「建立会话」或「自测」）")?;
 
-    let pt_bytes = plaintext.as_bytes();
-    let (ct, header) = ratchet.encrypt(pt_bytes, &[]);
+    let (ct, header) = ratchet.encrypt(plaintext.as_bytes(), &[]);
 
     let mut packet = header.serialize();
     packet.extend_from_slice(&ct);
@@ -954,7 +953,7 @@ fn self_test_message(state: State<AppState>) -> Result<String, String> {
     let mut alice = DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt.clone());
     let mut bob = DoubleRatchetSession::new_receiver(x_shared, ratchet_tier, salt);
 
-    let sample = "星枢自测消息：双棘轮收发成功 ✅";
+    let sample = "星枢自测消息：双棘轮收发成功";
     let (ct, hdr) = alice.encrypt(sample.as_bytes(), &[]);
 
     let pt = bob.decrypt(&hdr, &ct, &[])

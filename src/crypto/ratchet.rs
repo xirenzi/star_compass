@@ -19,7 +19,9 @@ use crate::astro::planets::ThreeCaSalt;
 use hkdf::Hkdf;
 use sha2::{Sha256, Digest};
 use zeroize::ZeroizeOnDrop;
+use serde::{Serialize, Deserialize};
 use std::collections::BTreeMap;
+use hex;
 
 type HkdfSha256 = Hkdf<Sha256>;
 
@@ -47,6 +49,150 @@ impl RootKey {
 }
 
 // ============================================================================
+// 可序列化的 Ratchet 状态（用于 CLI 持久化）
+// ============================================================================
+
+/// 可序列化的双棘轮状态，供 CLI 模式持久化到文件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RatchetState {
+    /// 根密钥（hex，64 字符）
+    pub root_key: String,
+    /// 发送链密钥（hex）
+    pub send_chain_key: String,
+    pub send_message_number: usize,
+    pub send_prev_chain_length: usize,
+    /// 接收链密钥（hex）
+    pub recv_chain_key: String,
+    pub recv_message_number: usize,
+    /// 我方 DH 密钥对（hex）
+    pub dh_private_x25519: String,
+    pub dh_public_x25519: String,
+    pub dh_private_kyber: String,
+    pub dh_public_kyber: String,
+    /// 对端 DH 公钥（hex，可选）
+    pub remote_dh_public: Option<String>,
+    /// 已跳过密钥缓存（序号 → 消息密钥，hex）
+    pub skipped_keys: Vec<(usize, String)>,
+    /// 棘轮等级 0=Kan 1=Zhi 2=Ren 3=Tian
+    pub tier: u8,
+    /// 是否已完成首次 DH 棘轮
+    pub dh_ratcheted: bool,
+    /// 三才盐（hex 编码）
+    pub salt: Option<String>,
+}
+
+impl RatchetState {
+    /// 从当前 DoubleRatchetSession 导出状态
+    pub fn from_session(s: &DoubleRatchetSession) -> Self {
+        let dh = s.dh_key_pair.public_key();
+        let tier = match &s.tier {
+            RatchetTier::Kan => 0,
+            RatchetTier::Zhi => 1,
+            RatchetTier::Ren => 2,
+            RatchetTier::Tian => 3,
+        };
+        Self {
+            root_key: hex::encode(s.root_key.as_bytes()),
+            send_chain_key: hex::encode(&s.sending.chain_key),
+            send_message_number: s.sending.message_number,
+            send_prev_chain_length: s.sending.previous_chain_length,
+            recv_chain_key: hex::encode(&s.receiving.chain_key),
+            recv_message_number: s.receiving.message_number,
+            dh_private_x25519: hex::encode(s.dh_key_pair.x25519_secret()),
+            dh_public_x25519: hex::encode(&dh.x25519),
+            dh_private_kyber: hex::encode(s.dh_key_pair.kyber_secret()),
+            dh_public_kyber: hex::encode(&dh.kyber),
+            remote_dh_public: s.remote_dh_public.map(|pk| hex::encode(pk)),
+            skipped_keys: s.skip_buffer.iter()
+                .map(|(n, k)| (*n, hex::encode(k.as_bytes())))
+                .collect(),
+            tier,
+            dh_ratcheted: s.dh_ratcheted,
+            salt: s.salt.as_ref().map(|sl| hex::encode(sl.as_bytes())),
+        }
+    }
+
+    /// 恢复为 DoubleRatchetSession
+    #[allow(deprecated)]
+    pub fn to_session(&self) -> Option<DoubleRatchetSession> {
+        let ratchet_tier = match self.tier {
+            0 => RatchetTier::Kan,
+            1 => RatchetTier::Zhi,
+            2 => RatchetTier::Ren,
+            3 => RatchetTier::Tian,
+            _ => return None,
+        };
+
+        // 解析 hex
+        let root_key = hex::decode(&self.root_key).ok()?;
+        let send_chain_key = hex::decode(&self.send_chain_key).ok()?;
+        let recv_chain_key = hex::decode(&self.recv_chain_key).ok()?;
+        let dh_xs = hex::decode(&self.dh_private_x25519).ok()?;
+        let dh_xp = hex::decode(&self.dh_public_x25519).ok()?;
+        let dh_ks = hex::decode(&self.dh_private_kyber).ok()?;
+        let dh_kp = hex::decode(&self.dh_public_kyber).ok()?;
+        let remote_pk = self.remote_dh_public.as_ref()
+            .and_then(|h| hex::decode(h).ok());
+
+        // 转为定长数组
+        let mut rk = [0u8; 32]; rk.copy_from_slice(&root_key);
+        let mut sck = [0u8; 32]; sck.copy_from_slice(&send_chain_key);
+        let mut rck = [0u8; 32]; rck.copy_from_slice(&recv_chain_key);
+        let mut dxs = [0u8; 32]; dxs.copy_from_slice(&dh_xs);
+        let mut dxp = [0u8; 32]; dxp.copy_from_slice(&dh_xp);
+        let mut dks = [0u8; 1632]; dks.copy_from_slice(&dh_ks);
+        let mut dkp = [0u8; 800]; dkp.copy_from_slice(&dh_kp);
+        let remote_pk = remote_pk.map(|v| { let mut a = [0u8; 32]; a.copy_from_slice(&v); a });
+
+        // 重建 DH 密钥对
+        let dh_kp = HybridKeyPair::restore(&dxs, &dxp, &dks, &dkp);
+
+        // 重建链状态
+        let tier_clone = ratchet_tier.clone();
+        let mut sending = ChainState::new(sck, ratchet_tier.clone());
+        sending.message_number = self.send_message_number;
+        sending.previous_chain_length = self.send_prev_chain_length;
+
+        let mut receiving = ChainState::new(rck, ratchet_tier.clone());
+        receiving.message_number = self.recv_message_number;
+
+        // 重建跳过缓存
+        let mut skip_buf = SkipBuffer::new(ratchet_tier.max_skip());
+        for (num, key_hex) in &self.skipped_keys {
+            if let Ok(key_bytes) = hex::decode(key_hex) {
+                let mut kb = [0u8; 32];
+                kb.copy_from_slice(&key_bytes);
+                let _ = skip_buf.store(*num, MessageKey(kb));
+            }
+        }
+
+        // 重建盐
+        let salt = self.salt.as_ref().and_then(|h| {
+            hex::decode(h).ok().map(|bytes| {
+                let mut arr = [0u8; 256];
+                let n = 256.min(bytes.len());
+                arr[..n].copy_from_slice(&bytes[..n]);
+                let sl = ThreeCaSalt::from_bytes(&arr);
+
+                sl
+            })
+        });
+
+        Some(DoubleRatchetSession {
+            root_key: RootKey(rk),
+            sending,
+            receiving,
+            dh_key_pair: dh_kp,
+            remote_dh_public: remote_pk,
+            skip_buffer: skip_buf,
+            tier: tier_clone,
+            salt,
+            dh_ratcheted: self.dh_ratcheted,
+        })
+    }
+}
+
+// ============================================================================
 // SkipBuffer
 // ============================================================================
 
@@ -66,6 +212,10 @@ impl SkipBuffer {
     }
     pub fn get(&self, msg_num: usize) -> Option<&MessageKey> {
         self.skipped_keys.get(&msg_num)
+    }
+    /// 迭代所有缓存的跳过密钥
+    pub fn iter(&self) -> impl Iterator<Item = (&usize, &MessageKey)> {
+        self.skipped_keys.iter()
     }
 }
 
@@ -257,23 +407,45 @@ impl DoubleRatchetSession {
 
     /// 创建接收方（Bob）
     /// 初始化：仅用 shared_secret 派初始接收链
-    pub fn new_receiver(shared_secret: [u8; 32], tier: RatchetTier, salt: Option<ThreeCaSalt>) -> Self {
+    /// 创建发送方（Alice）—— 使用指定的 DH keypair
+    pub fn new_sender_with(shared_secret: [u8; 32], tier: RatchetTier, salt: Option<ThreeCaSalt>, dh_kp: HybridKeyPair) -> Self {
         let salt_data = get_salt(&salt);
-
-        let recv_chain = derive_chain(&shared_secret, b"send-chain", &tier, &salt_data);
-        let send_chain = derive_chain(&shared_secret, b"recv-chain", &tier, &salt_data);
-
+        let send_chain = derive_chain(&shared_secret, b"send-chain", &tier, &salt_data);
+        let recv_chain = derive_chain(&shared_secret, b"recv-chain", &tier, &salt_data);
         Self {
             root_key: RootKey(shared_secret),
             sending: ChainState::new(send_chain, tier.clone()),
             receiving: ChainState::new(recv_chain, tier.clone()),
-            dh_key_pair: HybridKeyPair::generate(),
+            dh_key_pair: dh_kp,
             remote_dh_public: None,
             skip_buffer: SkipBuffer::new(tier.max_skip()),
             tier,
             salt,
             dh_ratcheted: false,
         }
+    }
+
+    /// 创建接收方（Bob）—— 使用指定的 DH keypair
+    pub fn new_receiver_with(shared_secret: [u8; 32], tier: RatchetTier, salt: Option<ThreeCaSalt>, dh_kp: HybridKeyPair) -> Self {
+        let salt_data = get_salt(&salt);
+        let recv_chain = derive_chain(&shared_secret, b"send-chain", &tier, &salt_data);
+        let send_chain = derive_chain(&shared_secret, b"recv-chain", &tier, &salt_data);
+        Self {
+            root_key: RootKey(shared_secret),
+            sending: ChainState::new(send_chain, tier.clone()),
+            receiving: ChainState::new(recv_chain, tier.clone()),
+            dh_key_pair: dh_kp,
+            remote_dh_public: None,
+            skip_buffer: SkipBuffer::new(tier.max_skip()),
+            tier,
+            salt,
+            dh_ratcheted: false,
+        }
+    }
+
+    /// 创建接收方（Bob）—— 内部生成 DH keypair
+    pub fn new_receiver(shared_secret: [u8; 32], tier: RatchetTier, salt: Option<ThreeCaSalt>) -> Self {
+        Self::new_receiver_with(shared_secret, tier, salt, HybridKeyPair::generate())
     }
 
     pub fn public_key(&self) -> [u8; 32] {
@@ -345,7 +517,6 @@ impl DoubleRatchetSession {
 
         let header = RatchetHeader::new(pk, msg_num, prev_chain_length);
         let msg_key = self.sending.derive_message_key(&salt_data);
-
         let nonce = self.derive_nonce_send(msg_num, &salt_data);
         let cipher = AeadCipher::new(msg_key.as_bytes());
         let mut full_aad = header.serialize();
@@ -367,17 +538,19 @@ impl DoubleRatchetSession {
         let salt_data = get_salt(&self.salt);
         let msg_num = header.message_number;
 
+        // 构建 full_aad（与 encrypt 保持一致：header.serialize + aad）
+        let mut full_aad = header.serialize();
+        full_aad.extend_from_slice(aad);
+
         // 先检查 skip buffer
         if let Some(key) = self.skip_buffer.get(msg_num) {
             let nonce = self.derive_nonce_recv(msg_num, &salt_data);
             let cipher = AeadCipher::new(key.as_bytes());
-            let mut full_aad = header.serialize();
-            full_aad.extend_from_slice(aad);
             return cipher.decrypt(&nonce, &full_aad, ciphertext);
         }
 
         // 尝试用当前 recv_chain 解密
-        let pt = self.try_decrypt_with_current_chain(header, ciphertext, aad, &salt_data);
+        let pt = self.try_decrypt_with_current_chain(header, ciphertext, &full_aad, &salt_data);
 
         if pt.is_some() {
             return pt;
@@ -385,39 +558,54 @@ impl DoubleRatchetSession {
 
         // 解密失败 + 收到新 DH 公钥 → 执行 DH 棘轮
         let peer_pk = header.public_key;
-        let need_dh = self.remote_dh_public.map_or(true, |prev| prev != peer_pk);
+
+        // 如果 remote_dh_public 为 None（首次消息），先存储 peer key，不触发棘轮
+        if self.remote_dh_public.is_none() {
+            self.remote_dh_public = Some(peer_pk);
+            return None;
+        }
+
+        // remote_dh_public 已有值且与 header 不匹配 → 触发 DH 棘轮
+        let need_dh = self.remote_dh_public.as_ref().map_or(false, |prev| *prev != peer_pk);
 
         if need_dh {
             self.perform_dh_ratchet(&peer_pk);
-            return self.try_decrypt_with_current_chain(header, ciphertext, aad, &salt_data);
+
+            return self.try_decrypt_with_current_chain(header, ciphertext, &full_aad, &salt_data);
         }
 
         None
     }
 
     /// 用当前 recv_chain 尝试解密（不触发 DH 棘轮）
+    /// aad 参数已是完整的 full_aad（header.serialize + app_aad）
     fn try_decrypt_with_current_chain(&mut self, header: &RatchetHeader,
                                       ciphertext: &[u8], aad: &[u8],
                                       salt: &[u8]) -> Option<Vec<u8>> {
         let msg_num = header.message_number;
 
-        // 跳过中间消息密钥
+
+        // Signal 对称性：Alice send-chain = Bob recv-chain，用 receiving chain
+        // 跳过中间消息密钥（仅当 msg_num > receiving.message_number 时）
         if msg_num > self.receiving.message_number {
             let skip_count = msg_num - self.receiving.message_number;
             for i in 0..skip_count {
                 let sn = self.receiving.message_number + i;
+                // skip key 用 receiving chain（= Alice 的 sending chain，与加密方一致）
                 let skip_key = self.receiving.derive_message_key(salt);
                 let _ = self.skip_buffer.store(sn, skip_key);
             }
+        } else if msg_num < self.receiving.message_number {
+            // msg_num < receiving.message_number：消息已解密过（重复/乱序），不处理
+            return None;
         }
 
+        // 跳过逻辑已推进链至 msg_num 位置，现在派生对应消息密钥
         let msg_key = self.receiving.derive_message_key(salt);
         let nonce = self.derive_nonce_recv(msg_num, salt);
         let cipher = AeadCipher::new(msg_key.as_bytes());
-        let mut full_aad = header.serialize();
-        full_aad.extend_from_slice(aad);
 
-        cipher.decrypt(&nonce, &full_aad, ciphertext)
+        cipher.decrypt(&nonce, aad, ciphertext)
     }
 
     /// 从当前发送链密钥派生 Nonce
@@ -433,7 +621,7 @@ impl DoubleRatchetSession {
         NonceData::from(nonce_bytes)
     }
 
-    /// 从当前接收链密钥派生 Nonce
+    /// 从发送链密钥派生 Nonce（接收方解密也用此链——对称性：Alice发/Bob收共享同一send链）
     fn derive_nonce_recv(&self, msg_num: usize, salt: &[u8]) -> NonceData {
         let tier_label = self.tier.info_label().unwrap_or(b"StarCompass");
         let mut info = tier_label.to_vec();
@@ -441,6 +629,7 @@ impl DoubleRatchetSession {
         info.extend_from_slice(&msg_num.to_le_bytes());
 
         let mut nonce_bytes = [0u8; 12];
+        // 用 receiving chain（= Alice 的 sending chain），与 derive_message_key 一致
         let hk = HkdfSha256::new(Some(salt), &self.receiving.chain_key);
         let _ = hk.expand(&info, &mut nonce_bytes);
         NonceData::from(nonce_bytes)
@@ -450,6 +639,126 @@ impl DoubleRatchetSession {
 // ============================================================================
 // 测试
 // ============================================================================
+
+    /// 极简测试：手动派生密钥和 nonce，看解密是否工作
+    #[test]
+    fn test_minimal_aead() {
+        use crate::crypto::aesgcm::{AeadCipher, NonceData};
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        type HkdfSha256 = Hkdf<Sha256>;
+
+        // 固定的 shared_secret, salt, tier_label
+        let shared = [0x01u8; 32];
+        let salt = vec![0u8; 40];
+        let tier_label = b"StarCompass-Kan";
+
+        // 派生 Alice 的发送链 (alice_send_chain = derive_chain(shared, "send-chain"))
+        let mut send_info = tier_label.to_vec();
+        send_info.extend_from_slice(b"send-chain");
+        let mut alice_send_ck = [0u8; 32];
+        let hk = HkdfSha256::new(Some(&salt), &shared);
+        let _ = hk.expand(&send_info, &mut alice_send_ck);
+
+        // 派生 Bob 的接收链 (bob_recv_chain = derive_chain(shared, "send-chain") = alice_send_ck)
+        let bob_recv_ck = alice_send_ck;
+
+        // Alice 派生 msg_key (msg_num=0)
+        let mut alice_msg_info = tier_label.to_vec();
+        alice_msg_info.extend_from_slice(&0usize.to_le_bytes());
+        let mut alice_msg_key = [0u8; 32];
+        let hk_a = HkdfSha256::new(Some(&salt), &alice_send_ck);
+        let _ = hk_a.expand(&alice_msg_info, &mut alice_msg_key);
+        // Alice step (链前进)
+        let mut step_info = tier_label.to_vec();
+        step_info.extend_from_slice(b"ratchet-step");
+        let mut alice_send_ck_after = [0u8; 32];
+        let hk_as = HkdfSha256::new(Some(&salt), &alice_send_ck);
+        let _ = hk_as.expand(&step_info, &mut alice_send_ck_after);
+
+        // Alice 派生 nonce
+        let mut alice_nonce_info = tier_label.to_vec();
+        alice_nonce_info.extend_from_slice(b"nonce");
+        alice_nonce_info.extend_from_slice(&0usize.to_le_bytes());
+        let mut alice_nonce = [0u8; 12];
+        let hk_an = HkdfSha256::new(Some(&salt), &alice_send_ck);
+        let _ = hk_an.expand(&alice_nonce_info, &mut alice_nonce);
+
+
+
+        // Alice 加密（no AAD for minimal test）
+        let pt = b"test";
+        let cipher = AeadCipher::new(&alice_msg_key);
+        let ct = cipher.encrypt(&NonceData::from(alice_nonce), &[], pt);
+
+
+        // Bob derives same msg_key and nonce
+        let mut bob_msg_info = tier_label.to_vec();
+        bob_msg_info.extend_from_slice(&0usize.to_le_bytes());
+        let mut bob_msg_key = [0u8; 32];
+        let hk_b = HkdfSha256::new(Some(&salt), &bob_recv_ck);
+        let _ = hk_b.expand(&bob_msg_info, &mut bob_msg_key);
+        let mut bob_nonce_info = tier_label.to_vec();
+        bob_nonce_info.extend_from_slice(b"nonce");
+        bob_nonce_info.extend_from_slice(&0usize.to_le_bytes());
+        let mut bob_nonce = [0u8; 12];
+        let hk_bn = HkdfSha256::new(Some(&salt), &bob_recv_ck);
+        let _ = hk_bn.expand(&bob_nonce_info, &mut bob_nonce);
+
+
+
+        assert_eq!(alice_msg_key, bob_msg_key, "msg_keys must match");
+        assert_eq!(alice_nonce, bob_nonce, "nonces must match");
+
+        // Bob decrypts
+        let bob_cipher = AeadCipher::new(&bob_msg_key);
+        let pt2 = bob_cipher.decrypt(&NonceData::from(bob_nonce), &[], &ct);
+        assert!(pt2.is_some(), "decrypt must succeed, got {:?}", pt2);
+        assert_eq!(pt2.unwrap(), pt);
+    }
+
+    /// 模拟 main.rs self-test 的场景：shared=[u8;32], salt=Some(ThreeCaSalt零值)
+    #[test]
+    fn test_self_test_scenario() {
+        use crate::StarCompass;
+        use crate::tiers::SecurityTier;
+        use crate::crypto::kyber_x25519::HybridKeyPair;
+
+        // 生成 shared secret（32字节 X25519）
+        let alice_kx = HybridKeyPair::generate();
+        let bob_kx = HybridKeyPair::generate();
+        let bob_pk = bob_kx.public_key();
+        let x_shared = alice_kx.dh_static(&bob_pk);
+
+        // 模拟 star.init_with_shared_secret(shared64)
+        let mut shared64 = [0u8; 64];
+        shared64[..32].copy_from_slice(&x_shared);
+        shared64[32..].copy_from_slice(&x_shared);
+
+        let star_tier = SecurityTier::KanWater;
+        let mut star = StarCompass::new(star_tier);
+        star.init_with_shared_secret(&shared64);
+        let salt = star.salt().cloned();
+
+        let ratchet_tier = match star_tier {
+            SecurityTier::KanWater => RatchetTier::Kan,
+            SecurityTier::XunWind => RatchetTier::Zhi,
+            SecurityTier::LiFire => RatchetTier::Ren,
+            SecurityTier::QianHeaven => RatchetTier::Tian,
+        };
+
+        let mut alice = DoubleRatchetSession::new_sender(x_shared, ratchet_tier.clone(), salt.clone());
+        let mut bob = DoubleRatchetSession::new_receiver(x_shared, ratchet_tier.clone(), salt.clone());
+
+        // Alice encrypts
+        let sample = b"Star Compass self-test: Double Ratchet Communication";
+        let (ct, hdr) = alice.encrypt(sample, &[]);
+
+        // Bob decrypts
+        let pt = bob.decrypt(&hdr, &ct, &[]);
+        assert!(pt.is_some(), "Bob should decrypt Alice's message");
+        assert_eq!(pt.unwrap(), sample);
+    }
 
 #[cfg(test)]
 mod tests {
