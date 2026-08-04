@@ -3,11 +3,10 @@ name: Build
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
-  push:
     tags:
       - 'v*'
+  pull_request:
+    branches: [master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
